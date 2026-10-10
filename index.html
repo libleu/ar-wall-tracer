@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<title>AR Wall Tracer</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; overflow: hidden; background: #0b0f14; font-family: system-ui, sans-serif; }
+  #stage { position: fixed; inset: 0; }
+  video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  #overlayCanvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
+  .panel {
+    position: fixed; left: 12px; right: 12px; bottom: 12px;
+    background: rgba(15, 20, 28, 0.88); border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 14px; padding: 12px; color: #e7ecf3; backdrop-filter: blur(8px);
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
+  .panel.collapsed .controls { display: none; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  button, label.btn {
+    background: #2563eb; color: #fff; border: none; border-radius: 10px;
+    padding: 10px 14px; font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  button.secondary, label.btn.secondary { background: #334155; }
+  button.warn { background: #b45309; }
+  button:active { transform: scale(0.96); }
+  input[type=file] { display: none; }
+  .slider-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 13px; }
+  .slider-row span { min-width: 92px; }
+  input[type=range] { flex: 1; accent-color: #2563eb; }
+  #togglePanel { position: absolute; right: 10px; top: 10px; }
+  #status {
+    position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+    background: rgba(15,20,28,0.85); color: #e7ecf3; padding: 8px 14px;
+    border-radius: 999px; font-size: 13px; max-width: 88%; text-align: center;
+    transition: opacity .3s; pointer-events: none;
+  }
+  #start {
+    position: fixed; inset: 0; display: flex; flex-direction: column; gap: 16px;
+    align-items: center; justify-content: center; color: #e7ecf3; text-align: center; padding: 24px;
+  }
+  #start h1 { font-size: 22px; }
+  #start p { max-width: 34ch; line-height: 1.5; font-size: 14px; color: #94a3b8; }
+  #start button { font-size: 17px; padding: 14px 22px; }
+  .hidden { display: none !important; }
+  .lock-badge {
+    position: fixed; top: 12px; right: 12px; background: #b45309; color: #fff;
+    padding: 6px 12px; border-radius: 999px; font-size: 12px; font-weight: 700;
+  }
+</style>
+</head>
+<body>
+
+<div id="start">
+  <h1>AR Wall Tracer</h1>
+  <p>Superposez votre dessin sur le mur via la caméra, ajustez-le une fois, puis tracez les lignes en suivant le calque.</p>
+  <button id="btnStart">Activer la caméra</button>
+  <p id="startHint">Astuce : ouvrez cette page sur votre téléphone (camera + plein écran requis).</p>
+</div>
+
+<div id="stage" class="hidden">
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="overlayCanvas"></canvas>
+  <div id="status"></div>
+  <div class="panel" id="panel">
+    <button id="togglePanel">▲</button>
+    <div class="controls">
+      <div class="row">
+        <label class="btn secondary">📄 Dessin<input type="file" id="fileInput" accept="image/*"></label>
+        <button id="btnLock" class="secondary">🔒 Verrouiller</button>
+        <button id="btnFreeze" class="secondary">⏸️ Figer l'image</button>
+        <button id="btnFlip" class="secondary">⇔ Miroir</button>
+        <button id="btnFs" class="secondary">⛶</button>
+      </div>
+      <div class="slider-row"><span>Opacité</span><input type="range" id="opacity" min="10" max="100" value="70"></div>
+      <div class="slider-row"><span>Épaisseur</span><input type="range" id="thickness" min="0.5" max="10" step="0.5" value="2"></div>
+      <div class="slider-row"><span>Rotation</span><input type="range" id="rotation" min="-180" max="180" value="0" step="1"></div>
+    </div>
+  </div>
+  <div class="lock-badge hidden" id="lockBadge">VERROUILLÉ</div>
+</div>
+
+<script>
+(() => {
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('overlayCanvas');
+  const ctx = canvas.getContext('2d');
+  const statusEl = document.getElementById('status');
+  let img = null;                 // Image du dessin
+  let frozen = null;              // Capture figée de la caméra
+  let locked = false;
+  let flipped = false;
+  const state = { x: 0, y: 0, scale: 1, rot: 0 }; // position du calque (coords canvas)
+  let thickness = 2;
+  let opacity = 0.7;
+
+  function showStatus(msg, ms = 2500) {
+    statusEl.textContent = msg;
+    statusEl.style.opacity = 1;
+    clearTimeout(showStatus._t);
+    showStatus._t = setTimeout(() => statusEl.style.opacity = 0, ms);
+  }
+
+  function resize() {
+    canvas.width = innerWidth * devicePixelRatio;
+    canvas.height = innerHeight * devicePixelRatio;
+    if (!img) return;
+    // garde le calque centré / initialisé après chargement
+  }
+
+  addEventListener('resize', resize);
+
+  // --- Caméra ---
+  document.getElementById('btnStart').addEventListener('click', async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 } },
+        audio: false
+      });
+      video.srcObject = stream;
+      await video.play();
+      document.getElementById('start').classList.add('hidden');
+      document.getElementById('stage').classList.remove('hidden');
+      resize();
+      showStatus('Caméra active. Chargez votre dessin (📄) puis ajustez-le avec 1 ou 2 doigts.', 4000);
+    } catch (e) {
+      showStatus('Caméra refusée ou indisponible : ' + e.message, 5000);
+      document.getElementById('startHint').textContent = 'Erreur caméra : ' + e.message + ' — la page doit être servie en HTTPS (ou localhost).';
+    }
+  });
+
+  // --- Chargement du dessin ---
+  document.getElementById('fileInput').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      img = image;
+      // Taille initiale : 80% de la largeur de l'écran, centré
+      const base = Math.min(innerWidth * 0.8, innerHeight * 0.8);
+      state.scale = base / image.width;
+      state.x = innerWidth / 2;
+      state.y = innerHeight / 2;
+      state.rot = 0;
+      document.getElementById('rotation').value = 0;
+      showStatus('Dessin chargé. Placez-le sur le mur, puis verrouillez.');
+    };
+    image.src = url;
+  });
+
+  // --- Contrôles ---
+  document.getElementById('opacity').addEventListener('input', e => opacity = e.target.value / 100);
+  document.getElementById('thickness').addEventListener('input', e => { thickness = +e.target.value; });
+  document.getElementById('rotation').addEventListener('input', e => {
+    state.rot = +e.target.value * Math.PI / 180;
+  });
+  document.getElementById('btnLock').addEventListener('click', () => {
+    locked = !locked;
+    document.getElementById('btnLock').textContent = locked ? '🔓 Déverrouiller' : '🔒 Verrouiller';
+    document.getElementById('lockBadge').classList.toggle('hidden', !locked);
+  });
+  document.getElementById('btnFreeze').addEventListener('click', () => {
+    if (!video.videoWidth) return;
+    if (frozen) { frozen = null; video.style.display = 'block'; showStatus('Caméra relancée'); }
+    else {
+      const c = document.createElement('canvas');
+      c.width = video.videoWidth; c.height = video.videoHeight;
+      c.getContext('2d').drawImage(video, 0, 0);
+      frozen = c;
+      video.style.display = 'none';
+      showStatus('Image figée — comparez avec le mur sans bouger');
+    }
+  });
+  document.getElementById('btnFlip').addEventListener('click', () => { flipped = !flipped; video.style.transform = flipped ? 'scaleX(-1)' : 'none'; showStatus(flipped ? 'Miroir activé' : 'Miroir désactivé'); });
+  document.getElementById('btnFs').addEventListener('click', () => {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(()=>{});
+    else document.exitFullscreen?.();
+  });
+  document.getElementById('togglePanel').addEventListener('click', (e) => {
+    const p = document.getElementById('panel');
+    p.classList.toggle('collapsed');
+    e.target.textContent = p.classList.contains('collapsed') ? '▼' : '▲';
+  });
+
+  // --- Gestes : 1 doigt = déplacer, 2 doigts = zoom + rotation ---
+  const pointers = new Map();
+  let lastPinch = null;
+
+  function toCanvas(x, y) {
+    return { x: x * devicePixelRatio, y: y * devicePixelRatio };
+  }
+
+  canvas.addEventListener('pointerdown', e => {
+    if (locked || !img) return;
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointers.size === 2) {
+      const [a, b] = [...pointers.values()];
+      lastPinch = {
+        dist: Math.hypot(a.x - b.x, a.y - b.y),
+        ang: Math.atan2(b.y - a.y, b.x - a.x)
+      };
+    }
+    canvas.setPointerCapture(e.pointerId);
+  });
+
+  canvas.addEventListener('pointermove', e => {
+    if (locked || !img || !pointers.has(e.pointerId)) return;
+    const prev = pointers.get(e.pointerId);
+    const cur = { x: e.clientX, y: e.clientY };
+    pointers.set(e.pointerId, cur);
+
+    if (pointers.size === 1) {
+      state.x += (cur.x - prev.x);
+      state.y += (cur.y - prev.y);
+    } else if (pointers.size === 2 && lastPinch) {
+      const [a, b] = [...pointers.values()];
+      const dist = Math.hypot(a.x - b.x, a.y - b.y);
+      const ang = Math.atan2(b.y - a.y, b.x - a.x);
+      state.scale *= dist / lastPinch.dist;
+      state.rot += ang - lastPinch.ang;
+      document.getElementById('rotation').value = Math.round(((state.rot * 180 / Math.PI) % 360 + 540) % 360 - 180);
+      lastPinch = { dist, ang };
+    }
+  });
+
+  const endPointer = e => {
+    pointers.delete(e.pointerId);
+    if (pointers.size < 2) lastPinch = null;
+  };
+  canvas.addEventListener('pointerup', endPointer);
+  canvas.addEventListener('pointercancel', endPointer);
+
+  // --- Rendu ---
+  // Prétraitement : extraction des contours (dessin en lignes claires)
+  let lineArt = null;
+  let lineArtFor = null;
+
+  function getLineArt() {
+    if (!img) return null;
+    if (lineArt && lineArtFor === img.src) return lineArt;
+    const c = document.createElement('canvas');
+    const maxW = 1400;
+    const w = Math.min(maxW, img.width);
+    const h = Math.round(img.height * (w / img.width));
+    c.width = w; c.height = h;
+    const cx = c.getContext('2d');
+    cx.drawImage(img, 0, 0, w, h);
+    const data = cx.getImageData(0, 0, w, h);
+    const d = data.data;
+    // seuillage simple : pixels sombres -> lignes noires, le reste -> transparent
+    for (let i = 0; i < d.length; i += 4) {
+      const lum = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2];
+      const alpha = d[i+3];
+      if (alpha > 20 && lum < 160) {
+        d[i] = 255; d[i+1] = 60; d[i+2] = 60; // rouge vif, bien visible sur tout mur
+        d[i+3] = 255;
+      } else {
+        d[i+3] = 0;
+      }
+    }
+    cx.putImageData(data, 0, 0);
+    lineArt = c;
+    lineArtFor = img.src;
+    return lineArt;
+  }
+
+  const processedToggle = { value: true }; // contours rouges par défaut
+  // Ajout d'un double-tap sur "Miroir" zone non — gardons simple : appui long sur badge dessin ?
+  // Simplicité : le mode contour est le seul mode ; pour l'image brute, double-tap sur le calque.
+  let showRaw = false;
+  canvas.addEventListener('dblclick', () => { showRaw = !showRaw; showStatus(showRaw ? 'Image brute' : 'Mode contours rouges'); });
+
+  function draw() {
+    const dpr = devicePixelRatio;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (frozen) {
+      // fond figé : cover
+      ctx.save();
+      ctx.translate(canvas.width / 2, canvas.height / 2);
+      if (flipped) ctx.scale(-1, 1);
+      const s = Math.max(canvas.width / frozen.width, canvas.height / frozen.height);
+      ctx.drawImage(frozen, -frozen.width * s / 2, -frozen.height * s / 2, frozen.width * s, frozen.height * s);
+      ctx.restore();
+    }
+
+    if (!img) { requestAnimationFrame(draw); return; }
+    const art = showRaw ? img : (getLineArt() || img);
+
+    ctx.save();
+    ctx.translate(state.x * dpr, state.y * dpr);
+    ctx.rotate(state.rot);
+    if (flipped) ctx.scale(-1, 1);
+    const w = art.width * state.scale * dpr;
+    const h = art.height * state.scale * dpr;
+    ctx.globalAlpha = showRaw ? opacity : Math.max(opacity, 0.35);
+    ctx.lineWidth = thickness * dpr;
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.drawImage(art, -w / 2, -h / 2, w, h);
+    ctx.restore();
+
+    requestAnimationFrame(draw);
+  }
+
+  resize();
+  draw();
+})();
+</script>
+</body>
+</html>
