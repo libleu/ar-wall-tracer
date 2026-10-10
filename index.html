@@ -71,9 +71,12 @@
         <button id="btnLock" class="secondary">🔒 Verrouiller</button>
         <button id="btnFreeze" class="secondary">⏸️ Figer l'image</button>
         <button id="btnFlip" class="secondary">⇔ Miroir</button>
+        <button id="btnMode" class="secondary">🎨 Contours</button>
         <button id="btnFs" class="secondary">⛶</button>
       </div>
       <div class="slider-row"><span>Opacité</span><input type="range" id="opacity" min="10" max="100" value="70"></div>
+      <div class="slider-row"><span>Seuil contours</span><input type="range" id="threshold" min="60" max="240" value="160"></div>
+      <div class="slider-row"><span>Tolérance fond</span><input type="range" id="bgTol" min="10" max="150" value="60"></div>
       <div class="slider-row"><span>Épaisseur</span><input type="range" id="thickness" min="0.5" max="10" step="0.5" value="2"></div>
       <div class="slider-row"><span>Rotation</span><input type="range" id="rotation" min="-180" max="180" value="0" step="1"></div>
     </div>
@@ -94,6 +97,10 @@
   const state = { x: 0, y: 0, scale: 1, rot: 0 }; // position du calque (coords canvas)
   let thickness = 2;
   let opacity = 0.7;
+  let mode = 'contours';            // 'contours' | 'brut'
+  let threshold = 160;
+  let bgTol = 60;
+  const view = { x: 0, y: 0, scale: 1 }; // zoom/pan du plan figé (loupe)
 
   function showStatus(msg, ms = 2500) {
     statusEl.textContent = msg;
@@ -153,6 +160,15 @@
   // --- Contrôles ---
   document.getElementById('opacity').addEventListener('input', e => opacity = e.target.value / 100);
   document.getElementById('thickness').addEventListener('input', e => { thickness = +e.target.value; });
+  document.getElementById('threshold').addEventListener('input', e => { threshold = +e.target.value; });
+  document.getElementById('bgTol').addEventListener('input', e => { bgTol = +e.target.value; });
+  document.getElementById('btnMode').addEventListener('click', () => {
+    mode = mode === 'contours' ? 'brut' : 'contours';
+    document.getElementById('btnMode').textContent = mode === 'contours' ? '🎨 Contours' : '🖼️ Image brute';
+    showStatus(mode === 'contours'
+      ? 'Mode contours : traits du dessin en rouge (réglez le seuil)'
+      : 'Mode brut : dessin original, fond retiré (réglez la tolérance)');
+  });
   document.getElementById('rotation').addEventListener('input', e => {
     state.rot = +e.target.value * Math.PI / 180;
   });
@@ -163,14 +179,19 @@
   });
   document.getElementById('btnFreeze').addEventListener('click', () => {
     if (!video.videoWidth) return;
-    if (frozen) { frozen = null; video.style.display = 'block'; showStatus('Caméra relancée'); }
-    else {
+    if (frozen) {
+      frozen = null;
+      video.style.display = 'block';
+      view.x = 0; view.y = 0; view.scale = 1;
+      showStatus('Caméra relancée');
+    } else {
       const c = document.createElement('canvas');
       c.width = video.videoWidth; c.height = video.videoHeight;
       c.getContext('2d').drawImage(video, 0, 0);
       frozen = c;
       video.style.display = 'none';
-      showStatus('Image figée — comparez avec le mur sans bouger');
+      view.x = 0; view.y = 0; view.scale = 1;
+      showStatus('Image figée. Zoomez avec 2 doigts, déplacez avec 1 doigt — le calque suit.');
     }
   });
   document.getElementById('btnFlip').addEventListener('click', () => { flipped = !flipped; video.style.transform = flipped ? 'scaleX(-1)' : 'none'; showStatus(flipped ? 'Miroir activé' : 'Miroir désactivé'); });
@@ -193,23 +214,47 @@
   }
 
   canvas.addEventListener('pointerdown', e => {
-    if (locked || !img) return;
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (pointers.size === 2) {
       const [a, b] = [...pointers.values()];
       lastPinch = {
         dist: Math.hypot(a.x - b.x, a.y - b.y),
-        ang: Math.atan2(b.y - a.y, b.x - a.x)
+        ang: Math.atan2(b.y - a.y, b.x - a.x),
+        mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
       };
     }
     canvas.setPointerCapture(e.pointerId);
   });
 
   canvas.addEventListener('pointermove', e => {
-    if (locked || !img || !pointers.has(e.pointerId)) return;
+    if (!pointers.has(e.pointerId)) return;
     const prev = pointers.get(e.pointerId);
     const cur = { x: e.clientX, y: e.clientY };
     pointers.set(e.pointerId, cur);
+
+    if (frozen) {
+      // Mode loupe : on zoome/panne l'image figée AVEC le calque, verrouillé ou non
+      if (pointers.size === 1) {
+        view.x += cur.x - prev.x;
+        view.y += cur.y - prev.y;
+      } else if (pointers.size === 2 && lastPinch) {
+        const [a, b] = [...pointers.values()];
+        const dist = Math.hypot(a.x - b.x, a.y - b.y);
+        const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+        const f = dist / lastPinch.dist;
+        // zoom centré sur le milieu des doigts
+        view.x = mid.x - (mid.x - view.x) * f;
+        view.y = mid.y - (mid.y - view.y) * f;
+        view.scale *= f;
+        // suit aussi le déplacement du milieu
+        view.x += mid.x - lastPinch.mid.x;
+        view.y += mid.y - lastPinch.mid.y;
+        lastPinch = { dist, ang: lastPinch.ang, mid };
+      }
+      return;
+    }
+
+    if (locked || !img) return;
 
     if (pointers.size === 1) {
       state.x += (cur.x - prev.x);
@@ -221,7 +266,7 @@
       state.scale *= dist / lastPinch.dist;
       state.rot += ang - lastPinch.ang;
       document.getElementById('rotation').value = Math.round(((state.rot * 180 / Math.PI) % 360 + 540) % 360 - 180);
-      lastPinch = { dist, ang };
+      lastPinch = { dist, ang, mid: lastPinch.mid };
     }
   });
 
@@ -239,7 +284,8 @@
 
   function getLineArt() {
     if (!img) return null;
-    if (lineArt && lineArtFor === img.src) return lineArt;
+    const key = img.src + '|' + threshold;
+    if (lineArt && lineArtFor === key) return lineArt;
     const c = document.createElement('canvas');
     const maxW = 1400;
     const w = Math.min(maxW, img.width);
@@ -249,11 +295,11 @@
     cx.drawImage(img, 0, 0, w, h);
     const data = cx.getImageData(0, 0, w, h);
     const d = data.data;
-    // seuillage simple : pixels sombres -> lignes noires, le reste -> transparent
+    // seuillage : pixels sombres -> lignes rouges, le reste -> transparent
     for (let i = 0; i < d.length; i += 4) {
       const lum = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2];
       const alpha = d[i+3];
-      if (alpha > 20 && lum < 160) {
+      if (alpha > 20 && lum < threshold) {
         d[i] = 255; d[i+1] = 60; d[i+2] = 60; // rouge vif, bien visible sur tout mur
         d[i+3] = 255;
       } else {
@@ -262,44 +308,83 @@
     }
     cx.putImageData(data, 0, 0);
     lineArt = c;
-    lineArtFor = img.src;
+    lineArtFor = key;
     return lineArt;
   }
 
-  const processedToggle = { value: true }; // contours rouges par défaut
-  // Ajout d'un double-tap sur "Miroir" zone non — gardons simple : appui long sur badge dessin ?
-  // Simplicité : le mode contour est le seul mode ; pour l'image brute, double-tap sur le calque.
-  let showRaw = false;
-  canvas.addEventListener('dblclick', () => { showRaw = !showRaw; showStatus(showRaw ? 'Image brute' : 'Mode contours rouges'); });
-
-  function draw() {
-    const dpr = devicePixelRatio;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    if (frozen) {
-      // fond figé : cover
-      ctx.save();
-      ctx.translate(canvas.width / 2, canvas.height / 2);
-      if (flipped) ctx.scale(-1, 1);
-      const s = Math.max(canvas.width / frozen.width, canvas.height / frozen.height);
-      ctx.drawImage(frozen, -frozen.width * s / 2, -frozen.height * s / 2, frozen.width * s, frozen.height * s);
-      ctx.restore();
+  // Mode brut : dessin original avec le fond (couleur dominante du bord) rendu transparent
+  let rawArt = null;
+  let rawArtFor = null;
+  function getRawArt() {
+    if (!img) return null;
+    const key = img.src + '|' + bgTol;
+    if (rawArt && rawArtFor === key) return rawArt;
+    const c = document.createElement('canvas');
+    const maxW = 1400;
+    const w = Math.min(maxW, img.width);
+    const h = Math.round(img.height * (w / img.width));
+    c.width = w; c.height = h;
+    const cx = c.getContext('2d');
+    cx.drawImage(img, 0, 0, w, h);
+    const data = cx.getImageData(0, 0, w, h);
+    const d = data.data;
+    // couleur de fond estimée depuis les 4 coins
+    const corners = [0, (w-1)*4, (h-1)*w*4, ((h-1)*w + w-1)*4];
+    let br = 0, bg = 0, bb = 0;
+    for (const o of corners) { br += d[o]; bg += d[o+1]; bb += d[o+2]; }
+    br /= 4; bg /= 4; bb /= 4;
+    const tol = bgTol * 2.2; // tolérance en distance RGB
+    for (let i = 0; i < d.length; i += 4) {
+      const dr = d[i] - br, dg = d[i+1] - bg, db = d[i+2] - bb;
+      const dist = Math.sqrt(dr*dr + dg*dg + db*db);
+      if (dist < tol) d[i+3] = Math.round(255 * (dist / tol)); // fondu progressif
     }
+    cx.putImageData(data, 0, 0);
+    rawArt = c;
+    rawArtFor = key;
+    return rawArt;
+  }
 
-    if (!img) { requestAnimationFrame(draw); return; }
-    const art = showRaw ? img : (getLineArt() || img);
-
+  function drawOverlay(dpr) {
+    if (!img) return;
+    const art = mode === 'brut' ? (getRawArt() || img) : (getLineArt() || img);
     ctx.save();
     ctx.translate(state.x * dpr, state.y * dpr);
     ctx.rotate(state.rot);
     if (flipped) ctx.scale(-1, 1);
     const w = art.width * state.scale * dpr;
     const h = art.height * state.scale * dpr;
-    ctx.globalAlpha = showRaw ? opacity : Math.max(opacity, 0.35);
+    ctx.globalAlpha = mode === 'brut' ? opacity : Math.max(opacity, 0.35);
     ctx.lineWidth = thickness * dpr;
     ctx.strokeStyle = 'rgba(255,255,255,0.9)';
     ctx.drawImage(art, -w / 2, -h / 2, w, h);
     ctx.restore();
+  }
+
+  function draw() {
+    const dpr = devicePixelRatio;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (frozen) {
+      // La loupe s'applique au mur figé ET au calque ensemble
+      ctx.save();
+      ctx.translate(view.x * dpr, view.y * dpr);
+      ctx.scale(view.scale, view.scale);
+      const s = Math.max(canvas.width / frozen.width, canvas.height / frozen.height);
+      if (flipped) {
+        ctx.save();
+        ctx.translate(canvas.width / 2, canvas.height / 2);
+        ctx.scale(-1, 1);
+        ctx.drawImage(frozen, -frozen.width * s / 2, -frozen.height * s / 2, frozen.width * s, frozen.height * s);
+        ctx.restore();
+      } else {
+        ctx.drawImage(frozen, 0, 0, frozen.width * s, frozen.height * s);
+      }
+      drawOverlay(dpr);
+      ctx.restore();
+    } else if (img) {
+      drawOverlay(dpr);
+    }
 
     requestAnimationFrame(draw);
   }
