@@ -54,7 +54,7 @@
     <button id="btnLockAR" disabled>🔒 Bloquer et AR</button>
   </div>
   <div class="slider-row"><span>Opacité</span><input type="range" id="opacity" min="10" max="100" value="80"></div>
-  <div class="slider-row"><span>Redressement</span><input type="range" id="tilt" min="-45" max="45" value="0" step="0.5"></div>
+  <div class="slider-row"><span>Rotation</span><input type="range" id="tilt" min="-45" max="45" value="0" step="0.5"></div>
   <div id="arControls" style="display:none">
     <div class="slider-row"><span>Taille (m)</span><input type="range" id="arSize" min="0.2" max="4" step="0.05" value="1"></div>
     <div class="row" style="margin-top:12px">
@@ -207,7 +207,7 @@
   // ================= MODE AR =================
   let xrActive = false, xrSession = null, xrRef = null, hitSrc = null;
   let gl = null, u = null, arTexture = null, texAspect = 1;
-  let latestHit = null, anchorMat = null;
+  let latestHit = null, anchorMat = null, pendingAnchor = false;
   let arSize = 1;
 
   function mat4mul(a, b) {
@@ -218,7 +218,9 @@
   }
 
   function initGL() {
-    gl = canvas.getContext('webgl', { alpha: true, xrCompatible: true });
+    // canvas DÉDIÉ au 3D : un canvas ne peut pas héberger 2D et WebGL en même temps
+    const glCanvas = document.createElement('canvas');
+    gl = glCanvas.getContext('webgl', { alpha: true, xrCompatible: true });
     const vs = `attribute vec2 p; varying vec2 vuv; uniform mat4 proj, view, model;
       void main(){ vuv = p*0.5+0.5; gl_Position = proj * view * model * vec4(p,0.0,1.0); }`;
     const fs = `precision mediump float; varying vec2 vuv; uniform sampler2D tex; uniform float uAlpha;
@@ -278,6 +280,25 @@
       const hits = frame.getHitTestResults(hitSrc);
       latestHit = hits.length ? hits[0].getPose(xrRef).transform.matrix : null;
     }
+    // ancrage : à plat contre le mur, vertical, face à vous
+    if (pendingAnchor && latestHit) {
+      pendingAnchor = false;
+      const hp = [latestHit[12], latestHit[13], latestHit[14]];   // point sur le mur
+      const vm = v.transform.matrix;                                // pose caméra
+      const cp = [vm[12], vm[13], vm[14]];
+      // normale mur = direction mur->caméra projetée à l'horizontale
+      let nx = cp[0] - hp[0], ny = 0, nz = cp[2] - hp[2];
+      const nl = Math.hypot(nx, nz) || 1; nx /= nl; nz /= nl;
+      // base : X = Y×Z, Y = verticale, Z = normale
+      const rx = nz, ry = 0, rz = -nx;
+      anchorMat = new Float32Array([
+        rx, ry, rz, 0,
+        0, 1, 0, 0,
+        nx, ny, nz, 0,
+        hp[0], hp[1], hp[2], 1
+      ]);
+      showHint('Ancré ✅ Le dessin est plaqué au mur, vertical. Déplacez-vous : il ne bouge pas.');
+    }
     const v = pose.views[0];
     if (anchorMat) {
       // ancré : reste fixe sur le mur pendant vos déplacements
@@ -297,6 +318,7 @@
   }
 
   async function enterAR() {
+    if (xrSession) { showStatus('Une session AR est déjà en cours — ✖ Quitter AR d\'abord.'); return; }
     if (!clean) { showStatus('Chargez d\'abord une image'); return; }
     if (!navigator.xr) { showStatus('WebXR indisponible. Utilisez CHROME (pas Brave, pas Samsung Internet).', 6000); return; }
     const ok = await navigator.xr.isSessionSupported('immersive-ar').catch(() => false);
@@ -318,7 +340,7 @@
     const viewer = await xrSession.requestReferenceSpace('viewer');
     hitSrc = await xrSession.requestHitTestSource({ space: viewer });
 
-    anchorMat = null; latestHit = null;
+    anchorMat = null; latestHit = null; pendingAnchor = false;
     xrActive = true;
     video.style.display = 'none';
     canvas.style.display = 'none';
@@ -328,8 +350,7 @@
 
     xrSession.addEventListener('select', () => {
       if (latestHit) {
-        anchorMat = new Float32Array(latestHit);
-        showHint('Ancré ✅ Le dessin reste sur le mur. Approchez-vous, dessinez. (↺ pour replacer)');
+        pendingAnchor = true; // l'ancrage se fait à la frame suivante (on y connaît la caméra)
       }
     });
     xrSession.addEventListener('end', () => {
