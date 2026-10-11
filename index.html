@@ -281,14 +281,14 @@
     const v = pose.views[0];
     if (anchorMat) {
       // ancré : reste fixe sur le mur pendant vos déplacements
-      draw(u, v.projectionMatrix, v.transform.inverse.matrix, modelMat(anchorMat), opacity);
+      drawARQuad(u, v.projectionMatrix, v.transform.inverse.matrix, modelMat(anchorMat), opacity);
     } else if (latestHit) {
       // aperçu fantôme suivant le centre de l'écran
-      draw(u, v.projectionMatrix, v.transform.inverse.matrix, modelMat(latestHit), Math.min(opacity, 0.35));
+      drawARQuad(u, v.projectionMatrix, v.transform.inverse.matrix, modelMat(latestHit), Math.min(opacity, 0.35));
     }
   }
 
-  function draw(un, proj, viewMat, model, alpha) {
+  function drawARQuad(un, proj, viewMat, model, alpha) {
     gl.uniformMatrix4fv(un.proj, false, proj);
     gl.uniformMatrix4fv(un.view, false, viewMat);
     gl.uniformMatrix4fv(un.model, false, model);
