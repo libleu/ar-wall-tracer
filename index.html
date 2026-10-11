@@ -91,18 +91,26 @@
   addEventListener('resize', resize);
 
   // --- Caméra (mode réglage) ---
+  let camStream = null;
   async function startCamera() {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+      camStream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 } }, audio: false
       });
-      video.srcObject = stream;
+      video.srcObject = camStream;
       await video.play();
       return true;
     } catch (e) {
       showStatus('Caméra refusée : ' + e.message, 6000);
       return false;
     }
+  }
+  function stopCamera() {
+    // ARCore exige un accès EXCLUSIF à la caméra :
+    // si le flux vidéo tourne, la session AR affiche du noir.
+    if (camStream) camStream.getTracks().forEach(t => t.stop());
+    camStream = null;
+    video.srcObject = null;
   }
 
   // --- Chargement + suppression du fond ---
@@ -319,6 +327,9 @@
     if (!navigator.xr) { showStatus('WebXR indisponible. Utilisez CHROME (pas Brave, pas Samsung Internet).', 6000); return; }
     const ok = await navigator.xr.isSessionSupported('immersive-ar').catch(() => false);
     if (!ok) { showStatus('AR non supporté ici. Utilisez Chrome sur votre S23.', 6000); return; }
+    // COUPER la caméra AVANT de lancer l'AR (sinon écran noir garanti)
+    stopCamera();
+
     try {
       // PAS de dom-overlay : c'est lui qui provoquait l'écran noir.
       // On utilise la config exacte de l'exemple officiel hit-test qui marche chez vous.
@@ -367,6 +378,7 @@
       canvas.style.display = 'block';
       hideHint();
       draw();
+      startCamera(); // rallume le flux vidéo du mode calque
     });
     xrSession.requestAnimationFrame(onXRFrame);
   }
