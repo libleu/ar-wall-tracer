@@ -30,7 +30,6 @@
     background: #2563eb; color: #fff; border: none; border-radius: 12px;
     padding: 14px 22px; font-size: 16px; font-weight: 700; cursor: pointer;
   }
-  button.secondary { background: #334155; }
   button:active { transform: scale(0.96); }
   button:disabled { background: #1e293b; color: #64748b; }
   input[type=file] { display: none; }
@@ -51,71 +50,77 @@
       <button id="btnAR" disabled>🥽 Lancer AR</button>
     </div>
     <div class="slider-row"><span>Opacité</span><input type="range" id="opacity" min="10" max="100" value="80"></div>
-    <div class="slider-row"><span>Taille (m)</span><input type="range" id="arSize" min="0.2" max="4" step="0.05" value="1"></div>
+    <div class="slider-row"><span>Largeur (m)</span><input type="range" id="arSize" min="0.2" max="4" step="0.05" value="1"></div>
     <div class="slider-row"><span>Rotation</span><input type="range" id="rot" min="-180" max="180" value="0"></div>
   </div>
-  <p>En AR : scannez le mur, tapotez pour plaquer le dessin, re-tapotez pour le libérer. Bouton retour pour quitter.</p>
+  <p>En AR : scannez le mur, tapotez pour plaquer le dessin, re-tapotez pour le déplacer. Bouton retour pour quitter.</p>
 </div>
 
 <canvas id="hiddenGL"></canvas>
 
 <script>
 (() => {
-  let clean = null;          // dessin avec fond supprimé
+  let clean = null;
   let opacity = 0.8;
   let arSize = 1;
   let rotRad = 0;
 
-  const show = id => document.getElementById(id);
+  let xrSession = null, xrRef = null, viewerRef = null, hitSrc = null;
+  let gl = null, glInitialized = false, u = null, arTexture = null, texAspect = 1;
+  let latestHit = null, anchorMat = null, anchored = false;
 
-  // --- Chargement de l'image + suppression du fond ---
+  const glCanvas = document.getElementById('hiddenGL');
+
+  /* --- Chargement de l'image + suppression du fond --- */
   document.getElementById('fileInput').addEventListener('change', e => {
     const file = e.target.files[0];
     if (!file) return;
     const image = new Image();
     image.onload = () => {
-      const maxW = 1400, w = Math.min(maxW, image.width);
-      const h = Math.round(image.height * (w / image.width));
+      const maxW = 1400;
+      const w = Math.min(maxW, image.width);
+      const h = Math.max(1, Math.round(image.height * (w / image.width)));
       const c = document.createElement('canvas');
       c.width = w; c.height = h;
-      const cx = c.getContext('2d');
+      const cx = c.getContext('2d', { willReadFrequently: true });
       cx.drawImage(image, 0, 0, w, h);
-      const data = cx.getImageData(0, 0, w, h);
-      const d = data.data;
-      const corners = [0, (w-1)*4, (h-1)*w*4, ((h-1)*w + w-1)*4];
-      let br=0, bg=0, bb=0;
-      for (const o of corners) { br += d[o]; bg += d[o+1]; bb += d[o+2]; }
-      br/=4; bg/=4; bb/=4;
-      const tol = 140;
-      for (let i = 0; i < d.length; i += 4) {
-        const dr=d[i]-br, dg=d[i+1]-bg, db=d[i+2]-bb;
-        const dist = Math.sqrt(dr*dr + dg*dg + db*db);
-        if (dist < tol) d[i+3] = Math.round(255 * (dist / tol));
-      }
-      cx.putImageData(data, 0, 0);
+      removeBackground(cx, w, h);
       clean = c;
-      const p = document.getElementById('previewBox');
-      p.innerHTML = '';
+      texAspect = c.height / c.width;
+      const preview = document.getElementById('previewBox');
+      preview.innerHTML = '';
       const thumb = document.createElement('img');
       thumb.src = c.toDataURL();
-      p.appendChild(thumb);
+      preview.appendChild(thumb);
       document.getElementById('btnAR').disabled = false;
+      URL.revokeObjectURL(image.src);
     };
+    image.onerror = () => { alert('Impossible de charger cette image.'); URL.revokeObjectURL(image.src); };
     image.src = URL.createObjectURL(file);
   });
 
+  function removeBackground(cx, w, h) {
+    const data = cx.getImageData(0, 0, w, h);
+    const d = data.data;
+    const corners = [0, (w-1)*4, (h-1)*w*4, ((h-1)*w + w-1)*4];
+    let br=0, bg=0, bb=0;
+    for (const o of corners) { br += d[o]; bg += d[o+1]; bb += d[o+2]; }
+    br/=4; bg/=4; bb/=4;
+    const tol = 140; // validé avec le dessin de l'utilisatrice (fond bleu clair)
+    for (let i = 0; i < d.length; i += 4) {
+      const dr=d[i]-br, dg=d[i+1]-bg, db=d[i+2]-bb;
+      const dist = Math.sqrt(dr*dr + dg*dg + db*db);
+      if (dist < tol) d[i+3] = Math.round(255 * (dist / tol));
+    }
+    cx.putImageData(data, 0, 0);
+  }
+
+  /* --- Réglages --- */
   document.getElementById('opacity').addEventListener('input', e => opacity = e.target.value / 100);
   document.getElementById('arSize').addEventListener('input', e => arSize = +e.target.value);
   document.getElementById('rot').addEventListener('input', e => rotRad = +e.target.value * Math.PI / 180);
 
-  // ================= MODE AR =================
-  let xrSession = null, xrRef = null, hitSrc = null;
-  let gl = null, u = null, arTexture = null, texAspect = 1;
-  let latestHit = null, anchorMat = null, anchored = false;
-  let lastViewMat = null;
-
-  const glCanvas = document.getElementById('hiddenGL');
-
+  /* --- Maths --- */
   function mat4mul(a, b) {
     const o = new Float32Array(16);
     for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++)
@@ -123,45 +128,90 @@
     return o;
   }
 
+  // Le hit test WebXR fournit la normale réelle de la surface : on plaque le dessin dessus.
+  function anchorFromHit(hit) {
+    const px = hit[12], py = hit[13], pz = hit[14];
+    let nx = hit[1], ny = hit[5], nz = hit[9];
+    let nl = Math.hypot(nx, ny, nz) || 1;
+    nx /= nl; ny /= nl; nz /= nl;
+    // axe horizontal du mur = normale × verticale
+    let xx = nz, xy = 0, xz = -nx;
+    const xl = Math.hypot(xx, xy, xz) || 1;
+    xx /= xl; xz /= xl;
+    // rotation autour de la normale du mur (le haut reste vertical)
+    const cos = Math.cos(rotRad), sin = Math.sin(rotRad);
+    const rx = cos * xx, ry = 0, rz = cos * xz;
+    const ux = -sin * xx, uy = 1, uz = -sin * xz;
+    return new Float32Array([
+      rx, ry, rz, 0,
+      ux, uy, uz, 0,
+      nx, ny, nz, 0,
+      px, py, pz, 1
+    ]);
+  }
+
+  // arSize = largeur réelle en mètres. Le quad va de -1 à +1 (largeur brute 2) :
+  // on scale par la DEMI-largeur, sinon tout est 2x trop grand (réticule géant !)
+  function modelMat(base) {
+    const halfW = arSize / 2;
+    const halfH = halfW * texAspect;
+    const scl = new Float32Array([
+      halfW, 0, 0, 0,
+      0, halfH, 0, 0,
+      0, 0, 1, 0,
+      0, 0, 0, 1
+    ]);
+    return mat4mul(base, scl);
+  }
+
+  /* --- WebGL --- */
   function initGL() {
-    gl = glCanvas.getContext('webgl', { alpha: true, xrCompatible: true });
-    const vs = `attribute vec2 p; varying vec2 vuv; uniform mat4 proj, view, model;
+    if (glInitialized) return;
+    glInitialized = true;
+    gl = glCanvas.getContext('webgl', { alpha: true, antialias: true, xrCompatible: true });
+    const vs = `
+      attribute vec2 p; varying vec2 vuv;
+      uniform mat4 proj, view, model;
       void main(){ vuv = p*0.5+0.5; gl_Position = proj * view * model * vec4(p, 0.0, 1.0); }`;
-    const fs = `precision mediump float; varying vec2 vuv; uniform sampler2D tex; uniform float uAlpha; uniform vec4 uColor; uniform float uMode;
+    const fs = `
+      precision mediump float;
+      varying vec2 vuv;
+      uniform sampler2D tex; uniform float uAlpha; uniform vec4 uColor; uniform float uMode;
       void main(){
         vec4 c = texture2D(tex, vec2(vuv.x, 1.0 - vuv.y));
         if (uMode < 0.5) {
-          // image
           if (c.a < 0.02) discard;
           gl_FragColor = vec4(c.rgb * c.a, c.a * uAlpha);
         } else {
-          // réticule : anneau centré
           float d = distance(vuv, vec2(0.5));
-          float ring = smoothstep(0.02, 0.0, abs(d - 0.4)) * smoothstep(0.0, 0.01, 0.42 - d);
-          float dotc = smoothstep(0.03, 0.015, d);
+          float ring = smoothstep(0.025, 0.0, abs(d - 0.38));
+          float dotc = smoothstep(0.045, 0.02, d);
           float a = max(ring, dotc);
           if (a < 0.05) discard;
           gl_FragColor = vec4(uColor.rgb * a, a);
         }
       }`;
-    const mk = (t, s) => { const o = gl.createShader(t); gl.shaderSource(o, s); gl.compileShader(o); return o; };
+    const mk = (type, src) => {
+      const sh = gl.createShader(type);
+      gl.shaderSource(sh, src);
+      gl.compileShader(sh);
+      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
+      return sh;
+    };
     const prog = gl.createProgram();
     gl.attachShader(prog, mk(gl.VERTEX_SHADER, vs));
     gl.attachShader(prog, mk(gl.FRAGMENT_SHADER, fs));
     gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
     gl.useProgram(prog);
-
-    const quad = [-1,-1, 1,-1, -1,1, 1,1];
     const buf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(quad), gl.STATIC_DRAW);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
     const loc = gl.getAttribLocation(prog, 'p');
     gl.enableVertexAttribArray(loc);
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-
     u = {
       proj: gl.getUniformLocation(prog, 'proj'),
       view: gl.getUniformLocation(prog, 'view'),
@@ -170,7 +220,6 @@
       color: gl.getUniformLocation(prog, 'uColor'),
       mode: gl.getUniformLocation(prog, 'uMode'),
     };
-
     arTexture = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, arTexture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, clean);
@@ -178,38 +227,11 @@
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    texAspect = clean.height / clean.width;
   }
 
-  // plaque le dessin à plat sur le mur, vertical, centré sur le point détecté
-  function anchorFromHit(hit, viewMat) {
-    const hp = [hit[12], hit[13], hit[14]];          // point sur le mur
-    const cp = [viewMat[12], viewMat[13], viewMat[14]]; // position caméra
-    let nx = cp[0] - hp[0], nz = cp[2] - hp[2];
-    const nl = Math.hypot(nx, nz) || 1; nx /= nl; nz /= nl;
-    const r = rotRad;
-    const cos = Math.cos(r), sin = Math.sin(r);
-    // X du mur tourné de r autour de la verticale
-    const rx = cos * nz, ry = 0, rz = -cos * nx;
-    // direction "vers le haut du dessin" (verticale), tournée pareil
-    const ux = -sin * nz, uy = 1, uz = sin * nx;
-    return new Float32Array([
-      rx, ry, rz, 0,
-      ux, uy, uz, 0,
-      nx, 0, nz, 0,
-      hp[0], hp[1], hp[2], 1
-    ]);
-  }
-
-  function modelMat(base) {
-    const s = arSize;
-    const scl = [s, 0, 0, 0, 0, s * texAspect, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
-    return mat4mul(base, scl);
-  }
-
-  function drawQuad(proj, viewMat, model, alpha, mode, color) {
+  function drawQuad(proj, view, model, alpha, mode, color) {
     gl.uniformMatrix4fv(u.proj, false, proj);
-    gl.uniformMatrix4fv(u.view, false, viewMat);
+    gl.uniformMatrix4fv(u.view, false, view);
     gl.uniformMatrix4fv(u.model, false, model);
     gl.uniform1f(u.alpha, alpha);
     gl.uniform4f(u.color, color[0], color[1], color[2], color[3]);
@@ -217,12 +239,14 @@
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
-  function onXRFrame(t, frame) {
+  /* --- Boucle AR --- */
+  function onXRFrame(time, frame) {
     const session = frame.session;
     session.requestAnimationFrame(onXRFrame);
     const pose = frame.getViewerPose(xrRef);
     if (!pose) return;
     const layer = session.renderState.baseLayer;
+    if (!layer) return;
     gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
     gl.viewport(0, 0, layer.framebufferWidth, layer.framebufferHeight);
     gl.clearColor(0, 0, 0, 0);
@@ -230,40 +254,51 @@
 
     if (hitSrc) {
       const hits = frame.getHitTestResults(hitSrc);
-      latestHit = hits.length ? hits[0].getPose(xrRef).transform.matrix : null;
+      if (hits.length) {
+        const hp = hits[0].getPose(xrRef);
+        latestHit = hp ? hp.transform.matrix : null;
+      } else latestHit = null;
     }
 
     const v = pose.views[0];
-    const viewMat = v.transform.inverse.matrix;
-    lastViewMat = viewMat;
 
     if (anchored && anchorMat) {
-      // dessin plaqué au mur
-      drawQuad(v.projectionMatrix, viewMat, modelMat(anchorMat), opacity, 0.0);
-    } else if (latestHit) {
-      // réticule vert = surface détectée + fantôme du dessin
-      const ghost = anchorFromHit(latestHit, viewMat);
-      drawQuad(v.projectionMatrix, viewMat, modelMat(ghost), Math.min(opacity, 0.4), 0.0);
-      drawQuad(v.projectionMatrix, viewMat, ghost, 1.0, 1.0, [0.2, 1.0, 0.4, 1.0]);
-    } else {
-      // réticule gris-bleu : scan en cours
-      const idle = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,-0.5,1]);
-      drawQuad(v.projectionMatrix, viewMat, idle, 1.0, 1.0, [0.9, 0.9, 0.9, 0.6]);
+      // dessin plaqué au mur : reste fixe quand vous vous déplacez
+      drawQuad(v.projectionMatrix, v.transform.inverse.matrix, modelMat(anchorMat), opacity, 0, [1,1,1,1]);
+      return;
     }
+    if (latestHit) {
+      // fantôme + réticule vert : surface détectée, tapotez pour plaquer
+      const ghost = anchorFromHit(latestHit);
+      drawQuad(v.projectionMatrix, v.transform.inverse.matrix, modelMat(ghost), Math.min(opacity, 0.4), 0, [1,1,1,1]);
+      drawQuad(v.projectionMatrix, v.transform.inverse.matrix, ghost, 1, 1, [0.2, 1, 0.4, 1]);
+      return;
+    }
+    // réticule discret au centre : scan en cours, bougez le téléphone
+    const idle = new Float32Array([
+      0.12, 0, 0, 0,
+      0, 0.12, 0, 0,
+      0, 0, 0.12, 0,
+      0, 0, -0.7, 1
+    ]);
+    drawQuad(v.projectionMatrix, v.transform.inverse.matrix, idle, 1, 1, [0.9, 0.9, 0.9, 0.65]);
   }
 
+  /* --- Entrée / sortie AR --- */
   async function enterAR() {
     if (xrSession) return;
     if (!clean) return;
-    if (!navigator.xr) { alert('WebXR indisponible — utilisez Chrome.'); return; }
-    const ok = await navigator.xr.isSessionSupported('immersive-ar').catch(() => false);
-    if (!ok) { alert('AR non supporté — utilisez Chrome sur votre S23.'); return; }
+    if (!navigator.xr) { alert('WebXR indisponible. Utilisez Chrome sur Android.'); return; }
+    const supported = await navigator.xr.isSessionSupported('immersive-ar').catch(() => false);
+    if (!supported) { alert('AR non supportée sur ce navigateur ou cet appareil.'); return; }
     try {
       xrSession = await navigator.xr.requestSession('immersive-ar', {
-        requiredFeatures: ['hit-test']
+        requiredFeatures: ['hit-test'],
+        optionalFeatures: ['local-floor']
       });
-    } catch (e) {
-      alert('Lancement AR refusé : ' + e.message);
+    } catch (err) {
+      xrSession = null;
+      alert('Lancement AR refusé : ' + err.message);
       return;
     }
     try {
@@ -271,38 +306,31 @@
       await gl.makeXRCompatible();
       await xrSession.updateRenderState({ baseLayer: new XRWebGLLayer(xrSession, gl) });
       xrRef = await xrSession.requestReferenceSpace('local');
-      const viewer = await xrSession.requestReferenceSpace('viewer');
-      hitSrc = await xrSession.requestHitTestSource({ space: viewer });
-    } catch (e) {
-      try { await xrSession.end(); } catch (e2) {}
-      xrSession = null;
-      alert('Erreur interne AR : ' + e.message);
+      viewerRef = await xrSession.requestReferenceSpace('viewer');
+      hitSrc = await xrSession.requestHitTestSource({ space: viewerRef });
+    } catch (err) {
+      try { await xrSession.end(); } catch (_) {}
+      xrSession = null; hitSrc = null;
+      alert('Erreur interne AR : ' + err.message);
       return;
     }
-
     anchored = false; anchorMat = null; latestHit = null;
     document.getElementById('home').style.display = 'none';
 
     xrSession.addEventListener('select', () => {
-      if (anchored) {
-        // re-tapote : libérer pour repositionner
-        anchored = false; anchorMat = null;
-      } else if (latestHit && lastViewMat) {
-        anchorMat = anchorFromHit(latestHit, lastViewMat);
-        anchored = true;
-      }
+      if (anchored) { anchored = false; anchorMat = null; return; } // libérer
+      if (latestHit) { anchorMat = anchorFromHit(latestHit); anchored = true; } // plaquer
     });
 
     xrSession.addEventListener('end', () => {
-      xrSession = null; hitSrc = null; anchorMat = null; anchored = null;
+      xrSession = null; xrRef = null; viewerRef = null; hitSrc = null;
+      latestHit = null; anchorMat = null; anchored = false;
       document.getElementById('home').style.display = '';
-      document.getElementById('btnAR').textContent = '🥽 Lancer AR';
     });
 
     xrSession.requestAnimationFrame(onXRFrame);
   }
 
-  // correction : anchorFromHit a besoin de la vraie matrice caméra — on la stocke
   document.getElementById('btnAR').addEventListener('click', enterAR);
 })();
 </script>
