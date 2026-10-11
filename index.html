@@ -7,128 +7,81 @@
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
   html, body { height: 100%; overflow: hidden; background: #0b0f14; font-family: system-ui, sans-serif; }
-  html.ar-mode, body.ar-mode { background: transparent !important; }
-  video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-  canvas#overlay { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; }
-  .panel {
-    position: fixed; left: 12px; right: 12px; bottom: 12px;
-    background: rgba(15,20,28,0.88); border: 1px solid rgba(255,255,255,0.12);
-    border-radius: 14px; padding: 14px; color: #e7ecf3; backdrop-filter: blur(8px);
-    padding-bottom: max(14px, env(safe-area-inset-bottom));
+  #home {
+    height: 100%; display: flex; flex-direction: column; gap: 20px;
+    align-items: center; justify-content: center; padding: 28px; color: #e7ecf3;
   }
-  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: center; }
+  #home h1 { font-size: 24px; }
+  #home p { color: #94a3b8; font-size: 14px; text-align: center; max-width: 36ch; line-height: 1.5; }
+  #previewBox {
+    width: 200px; height: 200px; border-radius: 16px; overflow: hidden;
+    background: #141b24; border: 1px dashed #334155;
+    display: flex; align-items: center; justify-content: center;
+    color: #475569; font-size: 13px; text-align: center; padding: 12px;
+  }
+  #previewBox img { max-width: 100%; max-height: 100%; object-fit: contain; }
+  .panel {
+    width: 100%; max-width: 360px;
+    background: rgba(30,41,59,0.6); border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 16px; padding: 16px;
+  }
+  .row { display: flex; gap: 10px; align-items: center; justify-content: center; }
   button, label.btn {
     background: #2563eb; color: #fff; border: none; border-radius: 12px;
-    padding: 14px 20px; font-size: 16px; font-weight: 700; cursor: pointer;
+    padding: 14px 22px; font-size: 16px; font-weight: 700; cursor: pointer;
   }
   button.secondary { background: #334155; }
   button:active { transform: scale(0.96); }
   button:disabled { background: #1e293b; color: #64748b; }
   input[type=file] { display: none; }
   .slider-row { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-size: 14px; }
-  .slider-row span { min-width: 110px; }
+  .slider-row span { min-width: 100px; }
   input[type=range] { flex: 1; accent-color: #2563eb; }
-  #status {
-    position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
-    background: rgba(15,20,28,0.88); color: #e7ecf3; padding: 10px 16px;
-    border-radius: 999px; font-size: 14px; max-width: 88%; text-align: center;
-    transition: opacity .3s; pointer-events: none; z-index: 30;
-  }
-  #arHint {
-    position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
-    background: rgba(15,20,28,0.88); color: #e7ecf3; padding: 10px 16px;
-    border-radius: 999px; font-size: 14px; max-width: 88%; text-align: center;
-    z-index: 30; display: none;
-  }
+  #hiddenGL { display: none; }
 </style>
 </head>
 <body>
 
-<video id="video" autoplay playsinline muted></video>
-<canvas id="overlay"></canvas>
-<div id="status"></div>
-<div id="arHint"></div>
-
-<div class="panel" id="panel">
-  <div class="row">
-    <label class="btn secondary">📄 Image<input type="file" id="fileInput" accept="image/*"></label>
-    <button id="btnLockAR" disabled>🔒 Bloquer et AR</button>
+<div id="home">
+  <h1>AR Wall Tracer 🎨</h1>
+  <div id="previewBox">Pas d'image<br>— choisissez votre dessin —</div>
+  <div class="panel">
+    <div class="row">
+      <label class="btn secondary">📄 Image<input type="file" id="fileInput" accept="image/*"></label>
+      <button id="btnAR" disabled>🥽 Lancer AR</button>
+    </div>
+    <div class="slider-row"><span>Opacité</span><input type="range" id="opacity" min="10" max="100" value="80"></div>
+    <div class="slider-row"><span>Taille (m)</span><input type="range" id="arSize" min="0.2" max="4" step="0.05" value="1"></div>
+    <div class="slider-row"><span>Rotation</span><input type="range" id="rot" min="-180" max="180" value="0"></div>
   </div>
-  <div class="slider-row"><span>Opacité</span><input type="range" id="opacity" min="10" max="100" value="80"></div>
-  <div class="slider-row"><span>Rotation</span><input type="range" id="tilt" min="-45" max="45" value="0" step="0.5"></div>
-  <div class="slider-row"><span>Taille (m)</span><input type="range" id="arSize" min="0.2" max="4" step="0.05" value="1"></div>
-  <div class="slider-row" style="font-size:12px;color:#94a3b8">En AR : scannez le mur, puis tapotez l'écran pour placer le dessin. Tapotez ailleurs pour le déplacer. Bouton retour du téléphone pour quitter.</div>
+  <p>En AR : scannez le mur, tapotez pour plaquer le dessin, re-tapotez pour le libérer. Bouton retour pour quitter.</p>
 </div>
+
+<canvas id="hiddenGL"></canvas>
 
 <script>
 (() => {
-  const video = document.getElementById('video');
-  const canvas = document.getElementById('overlay');
-  const ctx = canvas.getContext('2d');
-  const statusEl = document.getElementById('status');
-  const hintEl = document.getElementById('arHint');
-  const panel = document.getElementById('panel');
-  const btnLockAR = document.getElementById('btnLockAR');
-
-  let img = null;
-  let clean = null;            // dessin avec fond supprimé
+  let clean = null;          // dessin avec fond supprimé
   let opacity = 0.8;
-  let tiltDeg = 0;             // redressement vertical (degrés)
-  const place = { x: 0, y: 0, scale: 1, rot: 0 };
+  let arSize = 1;
+  let rotRad = 0;
 
-  function showStatus(msg, ms = 3000) {
-    statusEl.textContent = msg; statusEl.style.opacity = 1;
-    clearTimeout(showStatus._t);
-    showStatus._t = setTimeout(() => statusEl.style.opacity = 0, ms);
-  }
-  function showHint(msg) { hintEl.textContent = msg; hintEl.style.display = 'block'; }
-  function hideHint() { hintEl.style.display = 'none'; }
+  const show = id => document.getElementById(id);
 
-  function resize() {
-    canvas.width = innerWidth * devicePixelRatio;
-    canvas.height = innerHeight * devicePixelRatio;
-  }
-  addEventListener('resize', resize);
-
-  // --- Caméra (mode réglage) ---
-  let camStream = null;
-  async function startCamera() {
-    try {
-      camStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 } }, audio: false
-      });
-      video.srcObject = camStream;
-      await video.play();
-      return true;
-    } catch (e) {
-      showStatus('Caméra refusée : ' + e.message, 6000);
-      return false;
-    }
-  }
-  function stopCamera() {
-    // ARCore exige un accès EXCLUSIF à la caméra :
-    // si le flux vidéo tourne, la session AR affiche du noir.
-    if (camStream) camStream.getTracks().forEach(t => t.stop());
-    camStream = null;
-    video.srcObject = null;
-  }
-
-  // --- Chargement + suppression du fond ---
+  // --- Chargement de l'image + suppression du fond ---
   document.getElementById('fileInput').addEventListener('change', e => {
     const file = e.target.files[0];
     if (!file) return;
     const image = new Image();
     image.onload = () => {
-      img = image;
-      const maxW = 1400, w = Math.min(maxW, img.width);
-      const h = Math.round(img.height * (w / img.width));
+      const maxW = 1400, w = Math.min(maxW, image.width);
+      const h = Math.round(image.height * (w / image.width));
       const c = document.createElement('canvas');
       c.width = w; c.height = h;
       const cx = c.getContext('2d');
-      cx.drawImage(img, 0, 0, w, h);
+      cx.drawImage(image, 0, 0, w, h);
       const data = cx.getImageData(0, 0, w, h);
       const d = data.data;
-      // couleur de fond estimée depuis les 4 coins
       const corners = [0, (w-1)*4, (h-1)*w*4, ((h-1)*w + w-1)*4];
       let br=0, bg=0, bb=0;
       for (const o of corners) { br += d[o]; bg += d[o+1]; bb += d[o+2]; }
@@ -141,78 +94,27 @@
       }
       cx.putImageData(data, 0, 0);
       clean = c;
-      const base = Math.min(innerWidth * 0.8, innerHeight * 0.8);
-      place.scale = base / w;
-      place.x = innerWidth / 2; place.y = innerHeight / 2; place.rot = 0;
-      btnLockAR.disabled = false;
-      showStatus('Image chargée. Ajustez (1 doigt déplace, 2 doigts zoom/rotation), puis « Bloquer et AR ».', 5000);
+      const p = document.getElementById('previewBox');
+      p.innerHTML = '';
+      const thumb = document.createElement('img');
+      thumb.src = c.toDataURL();
+      p.appendChild(thumb);
+      document.getElementById('btnAR').disabled = false;
     };
     image.src = URL.createObjectURL(file);
   });
 
-  // --- Curseurs ---
   document.getElementById('opacity').addEventListener('input', e => opacity = e.target.value / 100);
-  document.getElementById('tilt').addEventListener('input', e => {
-    tiltDeg = +e.target.value;
-    place.rot = tiltDeg * Math.PI / 180;
-  });
-
-  // --- Gestes (mode réglage) ---
-  const pointers = new Map();
-  let lastPinch = null;
-  canvas.addEventListener('pointerdown', e => {
-    if (!img) return;
-    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pointers.size === 2) {
-      const [a, b] = [...pointers.values()];
-      lastPinch = { dist: Math.hypot(a.x-b.x, a.y-b.y), ang: Math.atan2(b.y-a.y, b.x-a.x) };
-    }
-    canvas.setPointerCapture(e.pointerId);
-  });
-  canvas.addEventListener('pointermove', e => {
-    if (!img || !pointers.has(e.pointerId)) return;
-    const prev = pointers.get(e.pointerId);
-    const cur = { x: e.clientX, y: e.clientY };
-    pointers.set(e.pointerId, cur);
-    if (pointers.size === 1) {
-      place.x += cur.x - prev.x; place.y += cur.y - prev.y;
-    } else if (pointers.size === 2 && lastPinch) {
-      const [a, b] = [...pointers.values()];
-      const dist = Math.hypot(a.x-b.x, a.y-b.y);
-      const ang = Math.atan2(b.y-a.y, b.x-a.x);
-      place.scale *= dist / lastPinch.dist;
-      place.rot += ang - lastPinch.ang;
-      lastPinch = { dist, ang };
-    }
-  });
-  const endP = e => { pointers.delete(e.pointerId); if (pointers.size < 2) lastPinch = null; };
-  canvas.addEventListener('pointerup', endP);
-  canvas.addEventListener('pointercancel', endP);
-
-  // --- Rendu 2D (mode réglage) ---
-  function draw() {
-    if (!xrActive) {
-      const dpr = devicePixelRatio;
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      if (clean) {
-        ctx.save();
-        ctx.translate(place.x * dpr, place.y * dpr);
-        ctx.rotate(place.rot);
-        const w = clean.width * place.scale * dpr;
-        const h = clean.height * place.scale * dpr;
-        ctx.globalAlpha = opacity;
-        ctx.drawImage(clean, -w/2, -h/2, w, h);
-        ctx.restore();
-      }
-      requestAnimationFrame(draw);
-    }
-  }
+  document.getElementById('arSize').addEventListener('input', e => arSize = +e.target.value);
+  document.getElementById('rot').addEventListener('input', e => rotRad = +e.target.value * Math.PI / 180);
 
   // ================= MODE AR =================
-  let xrActive = false, xrSession = null, xrRef = null, hitSrc = null;
+  let xrSession = null, xrRef = null, hitSrc = null;
   let gl = null, u = null, arTexture = null, texAspect = 1;
-  let latestHit = null, anchorMat = null, pendingAnchor = false;
-  let arSize = 1;
+  let latestHit = null, anchorMat = null, anchored = false;
+  let lastViewMat = null;
+
+  const glCanvas = document.getElementById('hiddenGL');
 
   function mat4mul(a, b) {
     const o = new Float32Array(16);
@@ -222,36 +124,53 @@
   }
 
   function initGL() {
-    // canvas DÉDIÉ au 3D : un canvas ne peut pas héberger 2D et WebGL en même temps
-    const glCanvas = document.createElement('canvas');
     gl = glCanvas.getContext('webgl', { alpha: true, xrCompatible: true });
     const vs = `attribute vec2 p; varying vec2 vuv; uniform mat4 proj, view, model;
-      void main(){ vuv = p*0.5+0.5; gl_Position = proj * view * model * vec4(p,0.0,1.0); }`;
-    const fs = `precision mediump float; varying vec2 vuv; uniform sampler2D tex; uniform float uAlpha;
-      void main(){ vec4 c = texture2D(tex, vec2(vuv.x, 1.0-vuv.y));
-        if (c.a < 0.02) discard;
-        gl_FragColor = vec4(c.rgb * c.a, c.a * uAlpha); }`;
+      void main(){ vuv = p*0.5+0.5; gl_Position = proj * view * model * vec4(p, 0.0, 1.0); }`;
+    const fs = `precision mediump float; varying vec2 vuv; uniform sampler2D tex; uniform float uAlpha; uniform vec4 uColor; uniform float uMode;
+      void main(){
+        vec4 c = texture2D(tex, vec2(vuv.x, 1.0 - vuv.y));
+        if (uMode < 0.5) {
+          // image
+          if (c.a < 0.02) discard;
+          gl_FragColor = vec4(c.rgb * c.a, c.a * uAlpha);
+        } else {
+          // réticule : anneau centré
+          float d = distance(vuv, vec2(0.5));
+          float ring = smoothstep(0.02, 0.0, abs(d - 0.4)) * smoothstep(0.0, 0.01, 0.42 - d);
+          float dotc = smoothstep(0.03, 0.015, d);
+          float a = max(ring, dotc);
+          if (a < 0.05) discard;
+          gl_FragColor = vec4(uColor.rgb * a, a);
+        }
+      }`;
     const mk = (t, s) => { const o = gl.createShader(t); gl.shaderSource(o, s); gl.compileShader(o); return o; };
     const prog = gl.createProgram();
     gl.attachShader(prog, mk(gl.VERTEX_SHADER, vs));
     gl.attachShader(prog, mk(gl.FRAGMENT_SHADER, fs));
     gl.linkProgram(prog);
     gl.useProgram(prog);
+
+    const quad = [-1,-1, 1,-1, -1,1, 1,1];
     const buf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(quad), gl.STATIC_DRAW);
     const loc = gl.getAttribLocation(prog, 'p');
     gl.enableVertexAttribArray(loc);
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+
     u = {
       proj: gl.getUniformLocation(prog, 'proj'),
       view: gl.getUniformLocation(prog, 'view'),
       model: gl.getUniformLocation(prog, 'model'),
       alpha: gl.getUniformLocation(prog, 'uAlpha'),
-      tex: gl.getUniformLocation(prog, 'tex'),
+      color: gl.getUniformLocation(prog, 'uColor'),
+      mode: gl.getUniformLocation(prog, 'uMode'),
     };
+
     arTexture = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, arTexture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, clean);
@@ -262,12 +181,40 @@
     texAspect = clean.height / clean.width;
   }
 
+  // plaque le dessin à plat sur le mur, vertical, centré sur le point détecté
+  function anchorFromHit(hit, viewMat) {
+    const hp = [hit[12], hit[13], hit[14]];          // point sur le mur
+    const cp = [viewMat[12], viewMat[13], viewMat[14]]; // position caméra
+    let nx = cp[0] - hp[0], nz = cp[2] - hp[2];
+    const nl = Math.hypot(nx, nz) || 1; nx /= nl; nz /= nl;
+    const r = rotRad;
+    const cos = Math.cos(r), sin = Math.sin(r);
+    // X du mur tourné de r autour de la verticale
+    const rx = cos * nz, ry = 0, rz = -cos * nx;
+    // direction "vers le haut du dessin" (verticale), tournée pareil
+    const ux = -sin * nz, uy = 1, uz = sin * nx;
+    return new Float32Array([
+      rx, ry, rz, 0,
+      ux, uy, uz, 0,
+      nx, 0, nz, 0,
+      hp[0], hp[1], hp[2], 1
+    ]);
+  }
+
   function modelMat(base) {
-    const r = place.rot;
-    const rot = [Math.cos(r), Math.sin(r), 0, 0, -Math.sin(r), Math.cos(r), 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
     const s = arSize;
     const scl = [s, 0, 0, 0, 0, s * texAspect, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
-    return mat4mul(base, mat4mul(rot, scl));
+    return mat4mul(base, scl);
+  }
+
+  function drawQuad(proj, viewMat, model, alpha, mode, color) {
+    gl.uniformMatrix4fv(u.proj, false, proj);
+    gl.uniformMatrix4fv(u.view, false, viewMat);
+    gl.uniformMatrix4fv(u.model, false, model);
+    gl.uniform1f(u.alpha, alpha);
+    gl.uniform4f(u.color, color[0], color[1], color[2], color[3]);
+    gl.uniform1f(u.mode, mode);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
   function onXRFrame(t, frame) {
@@ -280,117 +227,83 @@
     gl.viewport(0, 0, layer.framebufferWidth, layer.framebufferHeight);
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
+
     if (hitSrc) {
       const hits = frame.getHitTestResults(hitSrc);
       latestHit = hits.length ? hits[0].getPose(xrRef).transform.matrix : null;
     }
-    const v = pose.views[0];
-    // ancrage : à plat contre le mur, vertical, face à vous
-    if (pendingAnchor && latestHit) {
-      pendingAnchor = false;
-      const hp = [latestHit[12], latestHit[13], latestHit[14]];   // point sur le mur
-      const vm = v.transform.matrix;                                // pose caméra
-      const cp = [vm[12], vm[13], vm[14]];
-      // normale mur = direction mur->caméra projetée à l'horizontale
-      let nx = cp[0] - hp[0], ny = 0, nz = cp[2] - hp[2];
-      const nl = Math.hypot(nx, nz) || 1; nx /= nl; nz /= nl;
-      // base : X = Y×Z, Y = verticale, Z = normale
-      const rx = nz, ry = 0, rz = -nx;
-      anchorMat = new Float32Array([
-        rx, ry, rz, 0,
-        0, 1, 0, 0,
-        nx, ny, nz, 0,
-        hp[0], hp[1], hp[2], 1
-      ]);
-      showHint('Ancré ✅ Le dessin est plaqué au mur, vertical. Déplacez-vous : il ne bouge pas.');
-    }
-    if (anchorMat) {
-      // ancré : reste fixe sur le mur pendant vos déplacements
-      drawARQuad(u, v.projectionMatrix, v.transform.inverse.matrix, modelMat(anchorMat), opacity);
-    } else if (latestHit) {
-      // aperçu fantôme suivant le centre de l'écran
-      drawARQuad(u, v.projectionMatrix, v.transform.inverse.matrix, modelMat(latestHit), Math.min(opacity, 0.35));
-    }
-  }
 
-  function drawARQuad(un, proj, viewMat, model, alpha) {
-    gl.uniformMatrix4fv(un.proj, false, proj);
-    gl.uniformMatrix4fv(un.view, false, viewMat);
-    gl.uniformMatrix4fv(un.model, false, model);
-    gl.uniform1f(un.alpha, alpha);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    const v = pose.views[0];
+    const viewMat = v.transform.inverse.matrix;
+    lastViewMat = viewMat;
+
+    if (anchored && anchorMat) {
+      // dessin plaqué au mur
+      drawQuad(v.projectionMatrix, viewMat, modelMat(anchorMat), opacity, 0.0);
+    } else if (latestHit) {
+      // réticule vert = surface détectée + fantôme du dessin
+      const ghost = anchorFromHit(latestHit, viewMat);
+      drawQuad(v.projectionMatrix, viewMat, modelMat(ghost), Math.min(opacity, 0.4), 0.0);
+      drawQuad(v.projectionMatrix, viewMat, ghost, 1.0, 1.0, [0.2, 1.0, 0.4, 1.0]);
+    } else {
+      // réticule gris-bleu : scan en cours
+      const idle = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,-0.5,1]);
+      drawQuad(v.projectionMatrix, viewMat, idle, 1.0, 1.0, [0.9, 0.9, 0.9, 0.6]);
+    }
   }
 
   async function enterAR() {
-    if (xrSession) { showStatus('Une session AR est déjà en cours — ✖ Quitter AR d\'abord.'); return; }
-    if (!clean) { showStatus('Chargez d\'abord une image'); return; }
-    if (!navigator.xr) { showStatus('WebXR indisponible. Utilisez CHROME (pas Brave, pas Samsung Internet).', 6000); return; }
+    if (xrSession) return;
+    if (!clean) return;
+    if (!navigator.xr) { alert('WebXR indisponible — utilisez Chrome.'); return; }
     const ok = await navigator.xr.isSessionSupported('immersive-ar').catch(() => false);
-    if (!ok) { showStatus('AR non supporté ici. Utilisez Chrome sur votre S23.', 6000); return; }
-    // COUPER la caméra AVANT de lancer l'AR (sinon écran noir garanti)
-    stopCamera();
-
+    if (!ok) { alert('AR non supporté — utilisez Chrome sur votre S23.'); return; }
     try {
-      // PAS de dom-overlay : c'est lui qui provoquait l'écran noir.
-      // On utilise la config exacte de l'exemple officiel hit-test qui marche chez vous.
       xrSession = await navigator.xr.requestSession('immersive-ar', {
         requiredFeatures: ['hit-test']
       });
     } catch (e) {
-      showStatus('Lancement AR refusé : ' + e.message, 6000);
+      alert('Lancement AR refusé : ' + e.message);
       return;
     }
-    initGL();
     try {
+      initGL();
       await gl.makeXRCompatible();
       await xrSession.updateRenderState({ baseLayer: new XRWebGLLayer(xrSession, gl) });
       xrRef = await xrSession.requestReferenceSpace('local');
       const viewer = await xrSession.requestReferenceSpace('viewer');
       hitSrc = await xrSession.requestHitTestSource({ space: viewer });
     } catch (e) {
-      // ne jamais laisser une session fantôme active
       try { await xrSession.end(); } catch (e2) {}
       xrSession = null;
-      showStatus('Erreur interne AR : ' + e.message, 6000);
+      alert('Erreur interne AR : ' + e.message);
       return;
     }
 
-    anchorMat = null; latestHit = null; pendingAnchor = false;
-    xrActive = true;
-    document.documentElement.classList.add('ar-mode');
-    document.body.classList.add('ar-mode');
-    panel.style.display = 'none';   // le panneau disparaît en AR (pas de dom-overlay)
-    video.style.display = 'none';
-    canvas.style.display = 'none';
-    showHint('Scannez le mur en bougeant le téléphone, puis tapotez pour placer le dessin.');
+    anchored = false; anchorMat = null; latestHit = null;
+    document.getElementById('home').style.display = 'none';
 
     xrSession.addEventListener('select', () => {
-      // chaque tapote (re)place le dessin sous le réticule
-      pendingAnchor = true;
+      if (anchored) {
+        // re-tapote : libérer pour repositionner
+        anchored = false; anchorMat = null;
+      } else if (latestHit && lastViewMat) {
+        anchorMat = anchorFromHit(latestHit, lastViewMat);
+        anchored = true;
+      }
     });
+
     xrSession.addEventListener('end', () => {
-      xrActive = false; xrSession = null; hitSrc = null; anchorMat = null;
-      document.documentElement.classList.remove('ar-mode');
-      document.body.classList.remove('ar-mode');
-      panel.style.display = 'block';
-      btnLockAR.style.display = '';
-      video.style.display = 'block';
-      canvas.style.display = 'block';
-      hideHint();
-      draw();
-      startCamera(); // rallume le flux vidéo du mode calque
+      xrSession = null; hitSrc = null; anchorMat = null; anchored = null;
+      document.getElementById('home').style.display = '';
+      document.getElementById('btnAR').textContent = '🥽 Lancer AR';
     });
+
     xrSession.requestAnimationFrame(onXRFrame);
   }
 
-  btnLockAR.addEventListener('click', enterAR);
-  document.getElementById('arSize').addEventListener('input', e => arSize = +e.target.value);
-
-  startCamera().then(() => {
-    if (video.srcObject) showStatus('Choisissez votre image (📄), ajustez-la sur le mur, puis « Bloquer et AR ».', 6000);
-  });
-  resize();
-  draw();
+  // correction : anchorFromHit a besoin de la vraie matrice caméra — on la stocke
+  document.getElementById('btnAR').addEventListener('click', enterAR);
 })();
 </script>
 </body>
