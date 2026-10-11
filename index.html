@@ -7,6 +7,7 @@
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
   html, body { height: 100%; overflow: hidden; background: #0b0f14; font-family: system-ui, sans-serif; }
+  body.ar-mode, body.ar-mode html { background: transparent !important; }
   video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; }
   canvas#overlay { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; }
   .panel {
@@ -280,6 +281,7 @@
       const hits = frame.getHitTestResults(hitSrc);
       latestHit = hits.length ? hits[0].getPose(xrRef).transform.matrix : null;
     }
+    const v = pose.views[0];
     // ancrage : à plat contre le mur, vertical, face à vous
     if (pendingAnchor && latestHit) {
       pendingAnchor = false;
@@ -299,7 +301,6 @@
       ]);
       showHint('Ancré ✅ Le dessin est plaqué au mur, vertical. Déplacez-vous : il ne bouge pas.');
     }
-    const v = pose.views[0];
     if (anchorMat) {
       // ancré : reste fixe sur le mur pendant vos déplacements
       drawARQuad(u, v.projectionMatrix, v.transform.inverse.matrix, modelMat(anchorMat), opacity);
@@ -334,14 +335,23 @@
       return;
     }
     initGL();
-    try { await gl.makeXRCompatible(); } catch (e) {}
-    await xrSession.updateRenderState({ baseLayer: new XRWebGLLayer(xrSession, gl) });
-    xrRef = await xrSession.requestReferenceSpace('local');
-    const viewer = await xrSession.requestReferenceSpace('viewer');
-    hitSrc = await xrSession.requestHitTestSource({ space: viewer });
+    try {
+      await gl.makeXRCompatible();
+      await xrSession.updateRenderState({ baseLayer: new XRWebGLLayer(xrSession, gl) });
+      xrRef = await xrSession.requestReferenceSpace('local');
+      const viewer = await xrSession.requestReferenceSpace('viewer');
+      hitSrc = await xrSession.requestHitTestSource({ space: viewer });
+    } catch (e) {
+      // ne jamais laisser une session fantôme active
+      try { await xrSession.end(); } catch (e2) {}
+      xrSession = null;
+      showStatus('Erreur interne AR : ' + e.message, 6000);
+      return;
+    }
 
     anchorMat = null; latestHit = null; pendingAnchor = false;
     xrActive = true;
+    document.body.classList.add('ar-mode'); // fond transparent : la caméra doit être visible !
     video.style.display = 'none';
     canvas.style.display = 'none';
     document.getElementById('arControls').style.display = 'block';
@@ -355,6 +365,7 @@
     });
     xrSession.addEventListener('end', () => {
       xrActive = false; xrSession = null; hitSrc = null; anchorMat = null;
+      document.body.classList.remove('ar-mode');
       video.style.display = 'block';
       canvas.style.display = 'block';
       document.getElementById('arControls').style.display = 'none';
