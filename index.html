@@ -56,13 +56,8 @@
   </div>
   <div class="slider-row"><span>Opacité</span><input type="range" id="opacity" min="10" max="100" value="80"></div>
   <div class="slider-row"><span>Rotation</span><input type="range" id="tilt" min="-45" max="45" value="0" step="0.5"></div>
-  <div id="arControls" style="display:none">
-    <div class="slider-row"><span>Taille (m)</span><input type="range" id="arSize" min="0.2" max="4" step="0.05" value="1"></div>
-    <div class="row" style="margin-top:12px">
-      <button id="btnARReplace" class="secondary">↺ Replacer</button>
-      <button id="btnARQuit" class="secondary">✖ Quitter AR</button>
-    </div>
-  </div>
+  <div class="slider-row"><span>Taille (m)</span><input type="range" id="arSize" min="0.2" max="4" step="0.05" value="1"></div>
+  <div class="slider-row" style="font-size:12px;color:#94a3b8">En AR : scannez le mur, puis tapotez l'écran pour placer le dessin. Tapotez ailleurs pour le déplacer. Bouton retour du téléphone pour quitter.</div>
 </div>
 
 <script>
@@ -325,10 +320,10 @@
     const ok = await navigator.xr.isSessionSupported('immersive-ar').catch(() => false);
     if (!ok) { showStatus('AR non supporté ici. Utilisez Chrome sur votre S23.', 6000); return; }
     try {
+      // PAS de dom-overlay : c'est lui qui provoquait l'écran noir.
+      // On utilise la config exacte de l'exemple officiel hit-test qui marche chez vous.
       xrSession = await navigator.xr.requestSession('immersive-ar', {
-        requiredFeatures: ['hit-test'],
-        optionalFeatures: ['dom-overlay'],
-        domOverlay: { root: panel }
+        requiredFeatures: ['hit-test']
       });
     } catch (e) {
       showStatus('Lancement AR refusé : ' + e.message, 6000);
@@ -351,29 +346,25 @@
 
     anchorMat = null; latestHit = null; pendingAnchor = false;
     xrActive = true;
-    // CRUCIAL : html ET body doivent être transparents, sinon le fond noir
-    // de la page masque la caméra en mode AR
     document.documentElement.classList.add('ar-mode');
     document.body.classList.add('ar-mode');
+    panel.style.display = 'none';   // le panneau disparaît en AR (pas de dom-overlay)
     video.style.display = 'none';
     canvas.style.display = 'none';
-    document.getElementById('arControls').style.display = 'block';
-    btnLockAR.style.display = 'none';
-    showHint('Déplacez lentement le téléphone pour scanner le mur, puis touchez l\'écran pour ancrer le dessin.');
+    showHint('Scannez le mur en bougeant le téléphone, puis tapotez pour placer le dessin.');
 
     xrSession.addEventListener('select', () => {
-      if (latestHit) {
-        pendingAnchor = true; // l'ancrage se fait à la frame suivante (on y connaît la caméra)
-      }
+      // chaque tapote (re)place le dessin sous le réticule
+      pendingAnchor = true;
     });
     xrSession.addEventListener('end', () => {
       xrActive = false; xrSession = null; hitSrc = null; anchorMat = null;
       document.documentElement.classList.remove('ar-mode');
       document.body.classList.remove('ar-mode');
+      panel.style.display = 'block';
+      btnLockAR.style.display = '';
       video.style.display = 'block';
       canvas.style.display = 'block';
-      document.getElementById('arControls').style.display = 'none';
-      btnLockAR.style.display = '';
       hideHint();
       draw();
     });
@@ -381,11 +372,6 @@
   }
 
   btnLockAR.addEventListener('click', enterAR);
-  document.getElementById('btnARQuit').addEventListener('click', () => xrSession?.end());
-  document.getElementById('btnARReplace').addEventListener('click', () => {
-    anchorMat = null;
-    showHint('Visez le mur et touchez l\'écran pour replacer le dessin.');
-  });
   document.getElementById('arSize').addEventListener('input', e => arSize = +e.target.value);
 
   startCamera().then(() => {
